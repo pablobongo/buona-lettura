@@ -2,16 +2,19 @@
   "name": "Buona Lettura",
   "short_name": "Buona Lettura",
   "description": "Il tuo archivio personale di letture — libri letti, voti, statistiche e scaffale digitale.",
-  "start_url": "./index.html",
-  "scope": "./",
+  "start_url": "/buona-lettura/index.html",
+  "scope": "/buona-lettura/",
   "display": "standalone",
   "orientation": "portrait-primary",
   "background_color": "#1A1A2E",
   "theme_color": "#1A1A2E",
   "lang": "it",
   "dir": "ltr",
-  "categories": ["books", "lifestyle", "productivity"],
-
+  "categories": [
+    "books",
+    "lifestyle",
+    "productivity"
+  ],
   "icons": [
     {
       "src": "assets/icons/icon-192.svg",
@@ -32,15 +35,13 @@
       "purpose": "maskable"
     }
   ],
-
   "screenshots": [],
-
   "shortcuts": [
     {
       "name": "Aggiungi libro",
       "short_name": "Aggiungi",
       "description": "Apre direttamente il form per aggiungere un nuovo libro",
-      "url": "./app.html#libreria",
+      "url": "/buona-lettura/app.html#libreria",
       "icons": [
         {
           "src": "assets/icons/icon-192.svg",
@@ -53,7 +54,7 @@
       "name": "Statistiche",
       "short_name": "Stats",
       "description": "Apre la sezione statistiche di lettura",
-      "url": "./app.html#stats",
+      "url": "/buona-lettura/app.html#stats",
       "icons": [
         {
           "src": "assets/icons/icon-192.svg",
@@ -63,6 +64,6 @@
       ]
     }
   ],
-
-  "prefer_related_applications": false
+  "prefer_related_applications": false,
+  "id": "/buona-lettura/"
 }

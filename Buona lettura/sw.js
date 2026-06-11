@@ -26,8 +26,8 @@
    il rinnovo della cache sui client già installati.
    Formato: 'bl-v{major}.{minor}.{patch}'
 ─────────────────────────────────────────────────────────────── */
-const VERSIONE_CACHE        = 'bl-v1.1.0';
-const VERSIONE_CACHE_API    = 'bl-api-v1.1.0';
+const VERSIONE_CACHE        = 'bl-v1.2.0';
+const VERSIONE_CACHE_API    = 'bl-api-v1.2.0';
 
 /* ── FILE DA PRECARICARE ALL'INSTALLAZIONE ─────────────────────
    Questi file vengono scaricati e messi in cache durante l'evento
@@ -47,6 +47,9 @@ const FILE_STATICI = [
   './assets/icons/icon-192.svg',
   './assets/icons/icon-512.svg',
 ];
+
+/* URL base GitHub Pages — usato per confronti nei path */
+const BASE_URL = 'https://pablobongo.github.io/buona-lettura';
 
 /* File dell'app — usa Network-First durante sviluppo
    così le modifiche sono sempre visibili senza svuotare la cache */
