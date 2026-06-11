@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="92.16" fill="#1A1A2E"/>
-  <rect x="0" y="0" width="512" height="12.8" rx="0" fill="#C8963C" opacity="0.9"/>
-  <!-- libro aperto -->
-  <path d="M61.44 112.64 C61.44 112.64 256.0 92.16 256.0 143.36 C256.0 92.16 450.56 112.64 450.56 112.64 L450.56 419.84 C450.56 419.84 256.0 440.32 256.0 399.36 C256.0 440.32 61.44 419.84 61.44 419.84 Z"
-        fill="none" stroke="#C8963C" stroke-width="14.336" stroke-linejoin="round"/>
-  <line x1="256.0" y1="143.36" x2="256.0" y2="399.36" stroke="#C8963C" stroke-width="14.336"/>
-</svg>
