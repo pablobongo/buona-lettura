@@ -249,8 +249,10 @@ function _aggiornaGraficoMesi(terminati) {
 
   var conteggio = Array(12).fill(0);
   terminati.forEach(function(l) {
-    if (l.dataFine) {
-      conteggio[new Date(l.dataFine).getMonth()]++;
+    /* Usa dataInizio — il libro viene contato nel mese in cui è iniziato */
+    var dataRif = l.dataInizio || l.dataFine;
+    if (dataRif) {
+      conteggio[new Date(dataRif).getMonth()]++;
     }
   });
 
@@ -507,112 +509,108 @@ function _aggiornaHeatmap(tuttiLibri) {
   if (!contenitore) return;
 
   var anno = _periodo.anno || new Date().getFullYear();
+  var oggi = new Date();
 
-  /* Costruisce mappa data → conteggio */
-  var mappa = {};
-  tuttiLibri.forEach(function(l) {
-    if (l.stato !== 'terminato' || !l.dataFine) return;
-    var annoLibro = new Date(l.dataFine).getFullYear();
-    if (annoLibro !== anno) return;
-    var data = l.dataFine.split('T')[0];
-    mappa[data] = (mappa[data] || 0) + 1;
+  /* Filtra libri con data inizio nell'anno selezionato o ancora in corso */
+  var libriValidi = tuttiLibri.filter(function(l) {
+    if (!l.dataInizio) return false;
+    var inizio = new Date(l.dataInizio);
+    if (inizio.getFullYear() > anno) return false;
+    var fine = l.dataFine ? new Date(l.dataFine) : oggi;
+    return fine.getFullYear() >= anno;
   });
 
-  if (Object.keys(mappa).length === 0) {
+  if (libriValidi.length === 0) {
     contenitore.innerHTML =
       '<p style="font-size:12px;color:var(--colore-testo-fantasma);font-style:italic;">' +
-      'Nessuna lettura registrata per ' + anno + '.</p>';
+      'Nessuna lettura con date registrate per ' + anno + '.</p>';
     return;
   }
 
-  /* Genera la griglia — 53 settimane x 7 giorni */
-  var inizioAnno = new Date(anno, 0, 1);
-  var fineAnno   = new Date(anno, 11, 31);
-  var giorno     = new Date(inizioAnno);
+  var MESI_NOMI = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic'];
+  var N_SETTIMANE = 5; /* max settimane per mese */
+  var CELLA = 14;      /* dimensione cella px */
+  var GAP   = 3;
 
-  /* Porta al lunedì precedente */
-  var dowInizio = giorno.getDay();
-  giorno.setDate(giorno.getDate() - (dowInizio === 0 ? 6 : dowInizio - 1));
+  /*
+   * Per ogni cella (mese, settimana) calcola quanti libri
+   * erano in lettura in quella settimana.
+   * Settimana 0 = giorni 1-7, settimana 1 = 8-14, ecc.
+   */
+  function libriInSettimana(mese, settimana) {
+    var giornoInizio = settimana * 7 + 1;
+    var giornoFine   = Math.min(giornoInizio + 6, new Date(anno, mese + 1, 0).getDate());
+    var dataInizioCella = new Date(anno, mese, giornoInizio);
+    var dataFineCella   = new Date(anno, mese, giornoFine, 23, 59, 59);
 
-  var settimane = [];
-  var sett      = [];
-
-  while (giorno <= fineAnno || sett.length > 0) {
-    var dataStr = giorno.toISOString().split('T')[0];
-    var count   = mappa[dataStr] || 0;
-    var inAnno  = giorno.getFullYear() === anno;
-
-    sett.push({ data: dataStr, count: count, inAnno: inAnno });
-
-    if (sett.length === 7) {
-      settimane.push(sett);
-      sett = [];
-    }
-
-    giorno.setDate(giorno.getDate() + 1);
-
-    if (giorno > fineAnno && sett.length === 0) break;
-  }
-
-  if (sett.length > 0) {
-    while (sett.length < 7) sett.push({ data: '', count: 0, inAnno: false });
-    settimane.push(sett);
-  }
-
-  /* Intensità colore basata sul conteggio */
-  function coloreGiorno(count, inAnno) {
-    if (!inAnno || count === 0) return 'rgba(255,255,255,0.04)';
-    if (count >= 3)  return PALETTE.accento;
-    if (count === 2) return 'rgba(200,150,60,0.65)';
-    return 'rgba(200,150,60,0.35)';
-  }
-
-  var MESI = ['Gen','Feb','Mar','Apr','Mag','Giu','Lug','Ago','Set','Ott','Nov','Dic'];
-  var GIORNI = ['L','M','M','G','V','S','D'];
-
-  /* Costruisce HTML */
-  var html = '<div style="overflow-x:auto;padding-bottom:4px;">' +
-    '<div style="display:flex;gap:2px;min-width:max-content;">' +
-
-    /* Etichette giorni settimana */
-    '<div style="display:flex;flex-direction:column;gap:1px;margin-right:4px;padding-top:18px;">' +
-    GIORNI.map(function(g) {
-      return '<div style="height:10px;width:10px;font-size:7px;color:' + PALETTE.testoFantasma + ';' +
-             'display:flex;align-items:center;justify-content:center;">' + g + '</div>';
-    }).join('') +
-    '</div>' +
-
-    settimane.map(function(sett, si) {
-      /* Etichetta mese sopra la prima settimana del mese */
-      var primoGiornoInAnno = sett.find(function(g) { return g.inAnno && g.data; });
-      var etichettaMese = '';
-      if (primoGiornoInAnno) {
-        var d = new Date(primoGiornoInAnno.data);
-        if (d.getDate() <= 7) {
-          etichettaMese = MESI[d.getMonth()];
-        }
+    var count = 0;
+    libriValidi.forEach(function(l) {
+      var inizio = new Date(l.dataInizio);
+      var fine   = l.dataFine ? new Date(l.dataFine) : oggi;
+      /* Il libro era in lettura se c'è sovrapposizione con la cella */
+      if (inizio <= dataFineCella && fine >= dataInizioCella) {
+        count++;
       }
+    });
+    return count;
+  }
 
-      return '<div style="display:flex;flex-direction:column;gap:1px;">' +
-        '<div style="height:12px;font-size:7px;color:' + PALETTE.testoTenue + ';' +
-             'white-space:nowrap;margin-bottom:2px;">' + etichettaMese + '</div>' +
-        sett.map(function(g) {
-          var titolo = g.data + (g.count > 0 ? ' — ' + g.count + ' libro' + (g.count > 1 ? 'i' : '') : '');
-          return '<div title="' + titolo + '" style="width:10px;height:10px;border-radius:2px;' +
-                 'background:' + coloreGiorno(g.count, g.inAnno) + ';cursor:' + (g.count > 0 ? 'pointer' : 'default') + ';">' +
-                 '</div>';
-        }).join('') +
-      '</div>';
+  function colore(count) {
+    if (count === 0) return 'rgba(255,255,255,0.05)';
+    if (count === 1) return 'rgba(200,150,60,0.4)';
+    if (count === 2) return 'rgba(200,150,60,0.7)';
+    return PALETTE.accento;
+  }
+
+  /* Costruisce la griglia HTML */
+  var larghMese = (CELLA + GAP) * N_SETTIMANE;
+  var html = '<div style="overflow-x:auto;">' +
+    '<table style="border-collapse:separate;border-spacing:' + GAP + 'px;margin:0 auto;">' +
+
+    /* Intestazione mesi */
+    '<thead><tr>' +
+    '<td style="width:28px;"></td>' + /* spazio etichetta settimana */
+    MESI_NOMI.map(function(m) {
+      return '<td colspan="' + N_SETTIMANE + '" style="text-align:center;font-size:10px;' +
+             'color:' + PALETTE.testoTenue + ';padding-bottom:4px;white-space:nowrap;">' + m + '</td>';
     }).join('') +
-    '</div>' +
+    '</tr></thead>' +
+
+    /* Righe settimane */
+    '<tbody>' +
+    [0,1,2,3,4].map(function(s) {
+      return '<tr>' +
+        /* Etichetta settimana */
+        '<td style="font-size:9px;color:' + PALETTE.testoFantasma + ';text-align:right;' +
+             'padding-right:4px;vertical-align:middle;white-space:nowrap;">Sett ' + (s+1) + '</td>' +
+        MESI_NOMI.map(function(_, m) {
+          /* Controlla se la settimana esiste per questo mese */
+          var giorniNelMese = new Date(anno, m + 1, 0).getDate();
+          var giornoInizio  = s * 7 + 1;
+          if (giornoInizio > giorniNelMese) {
+            /* Settimana inesistente per questo mese — cella vuota */
+            return '<td colspan="' + N_SETTIMANE + '" style="width:' + CELLA + 'px;height:' + CELLA + 'px;' +
+                   'background:rgba(255,255,255,0.02);border-radius:3px;"></td>';
+          }
+          var count = libriInSettimana(m, s);
+          var giornoFine = Math.min(giornoInizio + 6, giorniNelMese);
+          var tooltip = anno + '-' + String(m+1).padStart(2,'0') + ': gg ' + giornoInizio + '-' + giornoFine +
+                        (count > 0 ? ' — ' + count + ' libro' + (count > 1 ? 'i' : '') + ' in lettura' : '');
+          return '<td colspan="' + N_SETTIMANE + '" title="' + tooltip + '" style="width:' + CELLA + 'px;height:' + CELLA + 'px;' +
+                 'background:' + colore(count) + ';border-radius:3px;cursor:' + (count > 0 ? 'pointer' : 'default') + ';' +
+                 'transition:filter 0.15s;"></td>';
+        }).join('') +
+      '</tr>';
+    }).join('') +
+    '</tbody></table>' +
 
     /* Legenda */
-    '<div style="display:flex;align-items:center;gap:4px;margin-top:8px;justify-content:flex-end;">' +
-    '<span style="font-size:9px;color:' + PALETTE.testoFantasma + ';">Meno</span>' +
-    ['rgba(255,255,255,0.04)','rgba(200,150,60,0.35)','rgba(200,150,60,0.65)',PALETTE.accento].map(function(c) {
-      return '<div style="width:10px;height:10px;border-radius:2px;background:' + c + ';"></div>';
+    '<div style="display:flex;align-items:center;gap:5px;margin-top:10px;justify-content:center;">' +
+    '<span style="font-size:9px;color:' + PALETTE.testoFantasma + ';">0 libri</span>' +
+    ['rgba(255,255,255,0.05)','rgba(200,150,60,0.4)','rgba(200,150,60,0.7)',PALETTE.accento].map(function(col) {
+      return '<div style="width:12px;height:12px;border-radius:3px;background:' + col + ';"></div>';
     }).join('') +
-    '<span style="font-size:9px;color:' + PALETTE.testoFantasma + ';">Più</span>' +
+    '<span style="font-size:9px;color:' + PALETTE.testoFantasma + ';">3+</span>' +
     '</div>' +
     '</div>';
 
