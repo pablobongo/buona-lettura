@@ -26,8 +26,8 @@
    il rinnovo della cache sui client già installati.
    Formato: 'bl-v{major}.{minor}.{patch}'
 ─────────────────────────────────────────────────────────────── */
-const VERSIONE_CACHE        = 'bl-v1.6.0';
-const VERSIONE_CACHE_API    = 'bl-api-v1.6.0';
+const VERSIONE_CACHE        = 'bl-v1.7.0';
+const VERSIONE_CACHE_API    = 'bl-api-v1.7.0';
 
 /* ── FILE DA PRECARICARE ALL'INSTALLAZIONE ─────────────────────
    Questi file vengono scaricati e messi in cache durante l'evento
@@ -44,7 +44,6 @@ const FILE_STATICI = [
   './js/app.js',
   './js/stats.js',
   './js/covers.js',
-  './js/sync.js',
   './assets/icons/icon-192.svg',
   './assets/icons/icon-512.svg',
 ];
@@ -62,7 +61,6 @@ const FILE_APP = [
   './js/app.js',
   './js/stats.js',
   './js/covers.js',
-  './js/sync.js',
 ];
 
 /* ── DOMINI ESTERNI DA GESTIRE CON STRATEGIA RETE-FIRST ────────
@@ -76,8 +74,6 @@ const DOMINI_RETE_FIRST = [
   'openlibrary.org',
   'covers.openlibrary.org',
   'api.anthropic.com',
-  'supabase.co',
-  'uhrmszvobguyienburta.supabase.co',
 ];
 
 /* ═══════════════════════════════════════════════════════════════
