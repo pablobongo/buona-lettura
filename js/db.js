@@ -220,10 +220,10 @@ async function inizializzaDB() {
     storeImpost.put({ chiave, valore });
   }
 
-  /* Inserisce generi di default */
+  /* Inserisce generi di default — put con id esplicito */
   const storeGeneri = tx.objectStore('generi');
   GENERI_DEFAULT.forEach((nome, indice) => {
-    storeGeneri.add({ nome, ordine: indice });
+    storeGeneri.put({ id: indice + 1, nome, ordine: indice });
   });
 
   return new Promise((risolvi, rifiuta) => {
@@ -278,6 +278,7 @@ async function aggiungiLibro(dati) {
     lingua:           dati.lingua   || 'it',
     tags:             dati.tags     || [],
     dataInserimento:  new Date().toISOString(),
+    aggiornato_il:    new Date().toISOString(),
   };
 
   /* Validazione minima */
@@ -440,7 +441,7 @@ async function aggiornaLibro(id, aggiornamenti) {
   if (!libro) throw new Error(`Libro non trovato: ${id}`);
 
   /* Unisce i dati esistenti con gli aggiornamenti */
-  const libroAggiornato = { ...libro, ...aggiornamenti, id };
+  const libroAggiornato = { ...libro, ...aggiornamenti, id, aggiornato_il: new Date().toISOString() };
 
   /* Se il libro viene terminato adesso, calcola avanzamento al 100% */
   if (aggiornamenti.stato === 'terminato') {
@@ -850,10 +851,15 @@ async function importaDatiBackup(dati) {
       });
     }
 
-    if (Array.isArray(dati.generi)) {
-      dati.generi.forEach(g => {
-        /* Usa add senza id per lasciare che autoIncrement assegni un nuovo id */
-        storeGeneri.add({ nome: g.nome, ordine: g.ordine });
+    if (Array.isArray(dati.generi) && dati.generi.length > 0) {
+      /* Usa put con id esplicito progressivo — evita conflitti con unique index */
+      dati.generi.forEach((g, idx) => {
+        storeGeneri.put({ id: idx + 1, nome: g.nome, ordine: g.ordine !== undefined ? g.ordine : idx });
+      });
+    } else {
+      /* Nessun genere nel backup — reinserisce i default */
+      GENERI_DEFAULT.forEach((nome, idx) => {
+        storeGeneri.put({ id: idx + 1, nome: nome, ordine: idx });
       });
     }
 

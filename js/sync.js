@@ -1,17 +1,13 @@
 /*
- * sync.js — Sincronizzazione automatica con Supabase
+ * sync.js — Sincronizzazione Supabase v2
  * ═══════════════════════════════════════════════════════════════
  *
- * Strategia: last-write-wins basata su timestamp aggiornato_il.
- * Ogni modifica locale viene inviata a Supabase in background.
- * Supabase Realtime notifica gli altri dispositivi in tempo reale.
- *
- * Struttura tabella bl_sync:
- *   id            — chiave primaria (es. libro.id, 'impost_tema', 'genere_1')
- *   tipo          — 'libro' | 'impostazione' | 'genere'
- *   dati          — JSON del record completo
- *   aggiornato_il — timestamp ISO per last-write-wins
- *   deleted       — soft delete
+ * Approccio semplificato:
+ * - Ogni operazione locale chiama esplicitamente pushLibro/pushImpostazione
+ * - Nessuna intercettazione automatica (causa loop)
+ * - Sync iniziale scarica tutto da Supabase e applica solo se più recente
+ * - Realtime notifica modifiche dagli altri dispositivi
+ * - Confronto timestamp via campo aggiornato_il (aggiunto a db.js)
  *
  * Dipende da: db.js
  * ═══════════════════════════════════════════════════════════════
@@ -19,533 +15,381 @@
 
 'use strict';
 
-/* ── Configurazione Supabase ───────────────────────────────────── */
-var SUPABASE_URL  = 'https://uhrmszvobguyienburta.supabase.co';
-var SUPABASE_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVocm1zenZvYmd1eWllbmJ1cnRhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0NTY1NDYsImV4cCI6MjA5NzAzMjU0Nn0.n8l9lGyAu_1LRAYCSJGdLt_TVXwTL-rA6IZp1zAAa84';
-var TABELLA       = 'bl_sync';
+var SUPABASE_URL = 'https://uhrmszvobguyienburta.supabase.co';
+var SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVocm1zenZvYmd1eWllbmJ1cnRhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0NTY1NDYsImV4cCI6MjA5NzAzMjU0Nn0.n8l9lGyAu_1LRAYCSJGdLt_TVXwTL-rA6IZp1zAAa84';
+var TABELLA     = 'bl_sync';
+var _DBS        = null; /* inizializzato in inizializzaSync() */
+var _syncAttivo = false;
+var _ws         = null;
 
-/* ── Riferimento DB locale ─────────────────────────────────────── */
-var _DBS = window.BuonaLetturaDB;
+/* ══════════════════════════════════════════════════════════════
+   INIT
+══════════════════════════════════════════════════════════════ */
 
-/* ── Stato sync ────────────────────────────────────────────────── */
-var _syncAttivo      = false;
-var _realtimeCanale  = null;
-var _ultimoSync      = null;
-var _inSync          = false;
-var _syncInProgress  = false; /* blocca loop intercettazione durante operazioni sync */
-
-/* ══════════════════════════════════════════════════════════════════
-   INIZIALIZZAZIONE
-══════════════════════════════════════════════════════════════════ */
-
-/*
- * inizializzaSync()
- * Punto di ingresso. Chiamata da app.html dopo l'init del DB.
- * 1. Esegue sync iniziale (scarica tutto da Supabase)
- * 2. Avvia listener Realtime per aggiornamenti in tempo reale
- * 3. Intercetta le funzioni DB per pushare ogni modifica locale
- */
 function inizializzaSync() {
-  if (_syncAttivo) return;
+  _DBS = window.BuonaLetturaDB;
+  if (_syncAttivo || !_DBS) return;
 
-  /* Verifica connessione prima di procedere */
   if (!navigator.onLine) {
-    console.log('[BL Sync] Offline — sync disabilitato fino alla connessione.');
-    window.addEventListener('online', function() {
-      inizializzaSync();
-    }, { once: true });
+    _indicatore('offline');
+    window.addEventListener('online', inizializzaSync, { once: true });
     return;
   }
 
-  console.log('[BL Sync] Inizializzazione...');
   _syncAttivo = true;
+  console.log('[Sync] Avvio...');
+  _indicatore('caricamento');
 
-  /* 1. Sync iniziale — scarica tutto da remoto */
-  _syncIniziale().then(function() {
-    /* 2. Avvia Realtime */
-    _avviaRealtime();
-    /* 3. Intercetta funzioni DB */
-    _interceptaDB();
-    /* Aggiorna UI */
-    _aggiornaIndicatoreSyncUI('ok');
-    console.log('[BL Sync] Attivo.');
-  }).catch(function(e) {
-    console.error('[BL Sync] Errore inizializzazione:', e);
-    _aggiornaIndicatoreSyncUI('errore');
-    _syncAttivo = false;
-  });
+  _syncCompleto()
+    .then(function() { _avviaRealtime(); })
+    .catch(function(e) {
+      console.error('[Sync] Errore init:', e);
+      _indicatore('errore');
+    });
 
-  /* Riconnetti quando torna online */
   window.addEventListener('online', function() {
-    if (!_syncAttivo) inizializzaSync();
-    else _syncIniziale();
+    _indicatore('caricamento');
+    _syncCompleto();
   });
-
-  window.addEventListener('offline', function() {
-    _aggiornaIndicatoreSyncUI('offline');
-  });
+  window.addEventListener('offline', function() { _indicatore('offline'); });
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   SYNC INIZIALE — scarica tutto da Supabase e unisce con locale
-══════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════
+   SYNC COMPLETO — scarica remoto, applica solo se più recente
+══════════════════════════════════════════════════════════════ */
 
-function _syncIniziale() {
-  if (_inSync) return Promise.resolve();
-  _inSync = true;
-  _aggiornaIndicatoreSyncUI('caricamento');
-
-  return _fetchTutti().then(function(righeRemote) {
-    if (!righeRemote || righeRemote.length === 0) {
-      /* Nessun dato remoto — push tutto il locale su Supabase */
-      return _pushTuttoLocale();
-    }
-    /* Unisce remoto + locale con last-write-wins */
-    return _unisciConLocale(righeRemote);
-  }).then(function() {
-    _ultimoSync = new Date().toISOString();
-    _inSync = false;
-    _aggiornaIndicatoreSyncUI('ok');
-  }).catch(function(e) {
-    _inSync = false;
-    _aggiornaIndicatoreSyncUI('errore');
-    throw e;
-  });
+function _syncCompleto() {
+  return _fetch('?select=*&order=aggiornato_il.desc')
+    .then(function(righe) {
+      if (!righe || righe.length === 0) {
+        /* Nessun dato remoto — push tutto il locale */
+        return _pushTuttoLocale();
+      }
+      return _applicaRemoto(righe);
+    })
+    .then(function() {
+      _indicatore('ok');
+      _ricaricaUI();
+    });
 }
 
-/* ── Fetch tutti i record da Supabase ─────────────────────────── */
-function _fetchTutti() {
-  /* Scarica tutti i record inclusi i deleted — necessario per sync eliminazioni */
-  return _supabaseFetch('GET', '?select=*&order=aggiornato_il.desc')
-    .then(function(r) { return r.ok ? r.json() : []; });
-}
-
-/* ── Unisce dati remoti con locali (last-write-wins) ─────────── */
-function _unisciConLocale(righeRemote) {
-  return Promise.all([
-    _DBS.leggiTuttiLibri(),
-    _DBS.leggiTutteImpostazioni(),
-    _DBS.leggiGeneri(),
-  ]).then(function(risultati) {
-    var libriLocali   = risultati[0];
-    var impostLocali  = risultati[1];
-    var generiLocali  = risultati[2];
-
-    /* Separa record attivi da eliminati */
-    var righeAttive   = righeRemote.filter(function(r) { return !r.deleted; });
-    var righeEliminate = righeRemote.filter(function(r) { return r.deleted; });
-
+function _applicaRemoto(righe) {
+  return _DBS.leggiTuttiLibri().then(function(libriLocali) {
     var promesse = [];
+    var idLocali = {};
+    libriLocali.forEach(function(l) { idLocali[l.id] = l; });
 
-    /* ── Attiva flag sync per bloccare loop ── */
-    _syncInProgress = true;
+    var idRemotiAttivi = [];
 
-    /* Elimina localmente i record cancellati da remoto */
-    righeEliminate.forEach(function(riga) {
-      if (riga.tipo === 'libro') {
-        var esisteLocale = libriLocali.find(function(l) { return l.id === riga.id; });
-        if (esisteLocale) {
-          /* Elimina dal DB locale senza pushare su Supabase */
-          promesse.push(_DBS.eliminaLibro(riga.id).catch(function(){}));
+    righe.forEach(function(riga) {
+      if (riga.tipo !== 'libro') return;
+
+      if (riga.deleted) {
+        /* Libro eliminato da remoto — elimina anche in locale */
+        if (idLocali[riga.id]) {
+          promesse.push(
+            _DBS.eliminaLibro(riga.id).catch(function() {})
+          );
         }
+        return;
+      }
+
+      idRemotiAttivi.push(riga.id);
+      var locale = idLocali[riga.id];
+      var tsRemoto = new Date(riga.aggiornato_il).getTime();
+
+      if (!locale) {
+        /* Libro nuovo da remoto */
+        promesse.push(
+          _DBS.aggiungiLibro(riga.dati).catch(function() {})
+        );
+      } else {
+        /* Confronta timestamp — vince il più recente */
+        var tsLocale = new Date(locale.aggiornato_il || locale.dataInserimento || 0).getTime();
+        if (tsRemoto > tsLocale) {
+          promesse.push(
+            _DBS.aggiornaLibro(riga.id, riga.dati).catch(function() {})
+          );
+        }
+        /* Se locale più recente — non fare nulla, il push avverrà al prossimo salvataggio */
       }
     });
 
-    /* Indici per confronti veloci */
-    var idRemotiAttivi    = righeAttive.map(function(r) { return r.id; });
-    var idRemotiEliminati = righeEliminate.map(function(r) { return r.id; });
-
-    /* Processa record attivi da remoto */
-    righeAttive.forEach(function(riga) {
-      var datiRemoti = riga.dati;
-      var tsRemoto   = new Date(riga.aggiornato_il).getTime();
-
-      if (riga.tipo === 'libro') {
-        var locale = libriLocali.find(function(l) { return l.id === riga.id; });
-        if (!locale) {
-          /* Libro nuovo da remoto — inserisci in locale */
-          promesse.push(_DBS.aggiungiLibro(datiRemoti).catch(function(){}));
-        } else {
-          /* Confronta timestamp: usa dataInserimento come proxy */
-          var tsLocale = new Date(locale.dataInserimento || 0).getTime();
-          if (tsRemoto > tsLocale) {
-            promesse.push(_DBS.aggiornaLibro(riga.id, datiRemoti).catch(function(){}));
-          }
-        }
-      }
-
-      if (riga.tipo === 'impostazione') {
-        var chiave = riga.id.replace('impost_', '');
-        promesse.push(_DBS.scriviImpostazione(chiave, datiRemoti.valore).catch(function(){}));
-      }
-
-      if (riga.tipo === 'genere') {
-        var esisteLocale = generiLocali.find(function(g) {
-          return g.nome === datiRemoti.nome;
-        });
-        if (!esisteLocale) {
-          promesse.push(_DBS.aggiungiGenere(datiRemoti.nome).catch(function(){}));
-        }
-      }
-    });
-
-    /* Push record locali non presenti in remoto (né attivi né eliminati) */
+    /* Push libri locali non presenti su remoto */
     libriLocali.forEach(function(l) {
-      /* Non pushare se è stato eliminato da remoto */
-      if (!idRemotiAttivi.includes(l.id) && !idRemotiEliminati.includes(l.id)) {
-        promesse.push(_pushRecord('libro', l.id, l));
+      if (!idRemotiAttivi.includes(l.id)) {
+        var eliminatoRemoto = righe.find(function(r) {
+          return r.id === l.id && r.deleted;
+        });
+        if (!eliminatoRemoto) {
+          promesse.push(_pushLibro(l));
+        }
       }
     });
 
-    Object.keys(impostLocali).forEach(function(chiave) {
-      if (!idRemotiAttivi.includes('impost_' + chiave)) {
-        promesse.push(_pushRecord('impostazione', 'impost_' + chiave, { valore: impostLocali[chiave] }));
-      }
+    /* Applica impostazioni e generi remoti */
+    return Promise.all(promesse).then(function() {
+      return _applicaImpostazioniGeneriRemoti(righe);
     });
-
-    generiLocali.forEach(function(g) {
-      if (!idRemotiAttivi.includes('genere_' + g.id)) {
-        promesse.push(_pushRecord('genere', 'genere_' + g.id, g));
-      }
-    });
-
-    return Promise.all(promesse);
-  }).then(function() {
-    _syncInProgress = false;
-    /* Ricarica UI dopo la sincronizzazione */
-    if (typeof aggiornaHomeConDB === 'function') aggiornaHomeConDB();
-    if (typeof disegnaScaffale  === 'function') disegnaScaffale();
-  }).catch(function(e) {
-    _syncInProgress = false;
-    throw e;
   });
 }
 
-/* ── Push tutto il locale su Supabase (primo avvio) ─────────── */
+function _applicaImpostazioniGeneriRemoti(righe) {
+  var promesse = [];
+
+  righe.forEach(function(riga) {
+    if (riga.deleted) return;
+
+    if (riga.tipo === 'impostazione') {
+      var chiave = riga.id.replace('impost_', '');
+      promesse.push(_DBS.scriviImpostazione(chiave, riga.dati.valore).catch(function() {}));
+    }
+
+    if (riga.tipo === 'genere') {
+      promesse.push(
+        _DBS.leggiGeneri().then(function(generi) {
+          var esiste = generi.find(function(g) { return g.nome === riga.dati.nome; });
+          if (!esiste) return _DBS.aggiungiGenere(riga.dati.nome);
+        }).catch(function() {})
+      );
+    }
+  });
+
+  return Promise.all(promesse);
+}
+
+/* ══════════════════════════════════════════════════════════════
+   PUSH ESPLICITO — chiamato da app.js dopo ogni modifica
+══════════════════════════════════════════════════════════════ */
+
+function pushLibro(libro) {
+  if (!libro || !libro.id) return Promise.resolve();
+  return _upsert({
+    id:            libro.id,
+    tipo:          'libro',
+    dati:          libro,
+    aggiornato_il: libro.aggiornato_il || new Date().toISOString(),
+    deleted:       false,
+  });
+}
+
+function pushEliminaLibro(id) {
+  return _upsert({
+    id:            id,
+    tipo:          'libro',
+    dati:          {},
+    aggiornato_il: new Date().toISOString(),
+    deleted:       true,
+  });
+}
+
+function pushImpostazione(chiave, valore) {
+  return _upsert({
+    id:            'impost_' + chiave,
+    tipo:          'impostazione',
+    dati:          { valore: valore },
+    aggiornato_il: new Date().toISOString(),
+    deleted:       false,
+  });
+}
+
+function pushGenere(id, nome) {
+  return _upsert({
+    id:            'genere_' + id,
+    tipo:          'genere',
+    dati:          { nome: nome, ordine: id },
+    aggiornato_il: new Date().toISOString(),
+    deleted:       false,
+  });
+}
+
+function pushEliminaGenere(id) {
+  return _upsert({
+    id:            'genere_' + id,
+    tipo:          'genere',
+    dati:          {},
+    aggiornato_il: new Date().toISOString(),
+    deleted:       true,
+  });
+}
+
 function _pushTuttoLocale() {
   return Promise.all([
     _DBS.leggiTuttiLibri(),
     _DBS.leggiTutteImpostazioni(),
     _DBS.leggiGeneri(),
   ]).then(function(risultati) {
-    var libri      = risultati[0];
-    var impost     = risultati[1];
-    var generi     = risultati[2];
-    var promesse   = [];
-
-    libri.forEach(function(l) {
-      promesse.push(_pushRecord('libro', l.id, l));
+    var promesse = [];
+    risultati[0].forEach(function(l) { promesse.push(pushLibro(l)); });
+    Object.keys(risultati[1]).forEach(function(k) {
+      promesse.push(pushImpostazione(k, risultati[1][k]));
     });
-
-    Object.keys(impost).forEach(function(chiave) {
-      promesse.push(_pushRecord('impostazione', 'impost_' + chiave, { valore: impost[chiave] }));
-    });
-
-    generi.forEach(function(g) {
-      promesse.push(_pushRecord('genere', 'genere_' + g.id, g));
-    });
-
+    risultati[2].forEach(function(g) { promesse.push(pushGenere(g.id, g.nome)); });
     return Promise.all(promesse);
   });
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   PUSH SINGOLO RECORD — upsert su Supabase
-══════════════════════════════════════════════════════════════════ */
-
-function _pushRecord(tipo, id, dati) {
-  var corpo = {
-    id:            id,
-    tipo:          tipo,
-    dati:          dati,
-    aggiornato_il: new Date().toISOString(),
-    deleted:       false,
-  };
-
-  return _supabaseFetch('POST',
-    '?on_conflict=id',
-    corpo,
-    { 'Prefer': 'resolution=merge-duplicates' }
-  ).then(function(r) {
-    if (!r.ok) {
-      return r.text().then(function(t) {
-        console.warn('[BL Sync] Push fallito per ' + id + ':', t);
-      });
-    }
-  }).catch(function(e) {
-    console.warn('[BL Sync] Errore push ' + id + ':', e.message);
-  });
-}
-
-/* ══════════════════════════════════════════════════════════════════
-   REALTIME — WebSocket Supabase per aggiornamenti istantanei
-══════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════
+   REALTIME
+══════════════════════════════════════════════════════════════ */
 
 function _avviaRealtime() {
-  /* Supabase Realtime via WebSocket */
   var wsUrl = SUPABASE_URL.replace('https://', 'wss://') +
-              '/realtime/v1/websocket?apikey=' + SUPABASE_KEY + '&vsn=1.0.0';
+    '/realtime/v1/websocket?apikey=' + SUPABASE_KEY + '&vsn=1.0.0';
 
   try {
-    var ws = new WebSocket(wsUrl);
-    _realtimeCanale = ws;
+    _ws = new WebSocket(wsUrl);
 
-    ws.onopen = function() {
-      /* Sottoscrivi alla tabella bl_sync */
-      ws.send(JSON.stringify({
+    _ws.onopen = function() {
+      _ws.send(JSON.stringify({
         topic:   'realtime:public:' + TABELLA,
         event:   'phx_join',
-        payload: { config: { broadcast: { self: false }, presence: { key: '' } } },
+        payload: { config: { broadcast: { self: false } } },
         ref:     '1',
       }));
-      console.log('[BL Sync] Realtime connesso.');
+      console.log('[Sync] Realtime connesso.');
     };
 
-    ws.onmessage = function(evento) {
+    _ws.onmessage = function(ev) {
       try {
-        var msg = JSON.parse(evento.data);
+        var msg = JSON.parse(ev.data);
         if (msg.event === 'INSERT' || msg.event === 'UPDATE') {
-          _gestisciAggiornamentoRemoto(msg.payload.record);
+          _gestisciRemoto(msg.payload.record);
         }
         if (msg.event === 'DELETE') {
-          _gestisciEliminazioneRemota(msg.payload.old_record);
+          var old = msg.payload.old_record;
+          if (old && old.tipo === 'libro') {
+            _DBS.eliminaLibro(old.id).then(_ricaricaUI).catch(function() {});
+          }
         }
-      } catch(e) { /* ignora messaggi di sistema */ }
+      } catch(e) {}
     };
 
-    ws.onclose = function() {
-      console.log('[BL Sync] Realtime disconnesso — riconnetto in 5s...');
-      _realtimeCanale = null;
+    _ws.onclose = function() {
+      console.log('[Sync] Realtime disconnesso — riconnetto tra 5s');
       setTimeout(_avviaRealtime, 5000);
     };
 
-    ws.onerror = function() {
-      ws.close();
-    };
+    _ws.onerror = function() { _ws.close(); };
 
   } catch(e) {
-    console.warn('[BL Sync] WebSocket non disponibile:', e.message);
-    /* Fallback: polling ogni 60 secondi */
+    console.warn('[Sync] WebSocket non disponibile, uso polling.');
     setInterval(function() {
-      if (navigator.onLine) _syncIniziale();
+      if (navigator.onLine) _syncCompleto();
     }, 60000);
   }
 }
 
-/* Gestisce un record aggiornato arrivato da remoto */
-function _gestisciAggiornamentoRemoto(riga) {
-  if (!riga || !riga.dati) return;
-  var dati = riga.dati;
-  _syncInProgress = true;
+function _gestisciRemoto(riga) {
+  if (!riga) return;
 
   if (riga.tipo === 'libro') {
+    if (riga.deleted) {
+      _DBS.eliminaLibro(riga.id).then(_ricaricaUI).catch(function() {});
+      return;
+    }
     _DBS.leggiLibro(riga.id).then(function(locale) {
+      var tsRemoto = new Date(riga.aggiornato_il).getTime();
       if (!locale) {
-        _DBS.aggiungiLibro(dati).then(function() { _syncInProgress = false; _ricaricaUI(); });
+        _DBS.aggiungiLibro(riga.dati).then(_ricaricaUI).catch(function() {});
       } else {
-        var tsRemoto = new Date(riga.aggiornato_il).getTime();
-        var tsLocale = new Date(locale.dataInserimento || 0).getTime();
+        var tsLocale = new Date(locale.aggiornato_il || locale.dataInserimento || 0).getTime();
         if (tsRemoto > tsLocale) {
-          _DBS.aggiornaLibro(riga.id, dati).then(function() { _syncInProgress = false; _ricaricaUI(); });
-        } else {
-          _syncInProgress = false;
+          _DBS.aggiornaLibro(riga.id, riga.dati).then(_ricaricaUI).catch(function() {});
         }
       }
     });
-  } else if (riga.tipo === 'impostazione') {
+  }
+
+  if (riga.tipo === 'impostazione' && !riga.deleted) {
     var chiave = riga.id.replace('impost_', '');
-    _DBS.scriviImpostazione(chiave, dati.valore).then(function() {
-      _syncInProgress = false;
+    _DBS.scriviImpostazione(chiave, riga.dati.valore).then(function() {
       if (typeof aggiornaImpostazioni === 'function') aggiornaImpostazioni();
-    });
-  } else if (riga.tipo === 'genere') {
+    }).catch(function() {});
+  }
+
+  if (riga.tipo === 'genere' && !riga.deleted) {
     _DBS.leggiGeneri().then(function(generi) {
-      var esiste = generi.find(function(g) { return g.nome === dati.nome; });
-      if (!esiste) { _DBS.aggiungiGenere(dati.nome).then(function() { _syncInProgress = false; }); }
-      else { _syncInProgress = false; }
-    });
-  } else {
-    _syncInProgress = false;
-  }
-}
-
-/* Gestisce un record eliminato arrivato da remoto */
-function _gestisciEliminazioneRemota(riga) {
-  if (!riga) return;
-  if (riga.tipo === 'libro') {
-    _DBS.eliminaLibro(riga.id).then(_ricaricaUI);
-  }
-}
-
-function _ricaricaUI() {
-  if (typeof aggiornaHomeConDB === 'function') aggiornaHomeConDB();
-  if (typeof disegnaScaffale  === 'function') disegnaScaffale();
-  if (typeof aggiornaClassifica === 'function') aggiornaClassifica();
-  _aggiornaIndicatoreSyncUI('ok');
-}
-
-/* ══════════════════════════════════════════════════════════════════
-   INTERCETTA FUNZIONI DB — push automatico ad ogni modifica locale
-══════════════════════════════════════════════════════════════════ */
-
-function _interceptaDB() {
-  /* Intercetta aggiungiLibro */
-  var _aggiOriginal = _DBS.aggiungiLibro.bind(_DBS);
-  _DBS.aggiungiLibro = function(dati) {
-    return _aggiOriginal(dati).then(function(id) {
-      /* Non pushare se operazione avviata dal sync stesso */
-      if (!_syncInProgress) {
-        _DBS.leggiLibro(id).then(function(libro) {
-          if (libro) _pushRecord('libro', id, libro);
-        });
-      }
-      return id;
-    });
-  };
-
-  /* Intercetta aggiornaLibro */
-  var _aggiLibroOriginal = _DBS.aggiornaLibro.bind(_DBS);
-  _DBS.aggiornaLibro = function(id, aggiornamenti) {
-    return _aggiLibroOriginal(id, aggiornamenti).then(function(libro) {
-      if (!_syncInProgress) {
-        _pushRecord('libro', id, libro);
-      }
-      return libro;
-    });
-  };
-
-  /* Intercetta eliminaLibro */
-  var _elimOriginal = _DBS.eliminaLibro.bind(_DBS);
-  _DBS.eliminaLibro = function(id) {
-    return _elimOriginal(id).then(function(ok) {
-      /* Soft delete su Supabase — anche durante sync (eliminazione deliberata) */
-      _supabaseFetch('PATCH', '?id=eq.' + encodeURIComponent(id), {
-        deleted: true,
-        aggiornato_il: new Date().toISOString(),
-      });
-      return ok;
-    });
-  };
-
-  /* Intercetta scriviImpostazione */
-  var _scriviOriginal = _DBS.scriviImpostazione.bind(_DBS);
-  _DBS.scriviImpostazione = function(chiave, valore) {
-    return _scriviOriginal(chiave, valore).then(function(ok) {
-      if (!_syncInProgress) {
-        _pushRecord('impostazione', 'impost_' + chiave, { valore: valore });
-      }
-      return ok;
-    });
-  };
-
-  /* Intercetta aggiungiGenere */
-  var _genereOriginal = _DBS.aggiungiGenere.bind(_DBS);
-  _DBS.aggiungiGenere = function(nome) {
-    return _genereOriginal(nome).then(function(id) {
-      if (!_syncInProgress) {
-        _pushRecord('genere', 'genere_' + id, { nome: nome, ordine: id });
-      }
-      return id;
-    });
-  };
-
-  /* Intercetta eliminaGenere */
-  var _elimGenereOriginal = _DBS.eliminaGenere.bind(_DBS);
-  _DBS.eliminaGenere = function(id) {
-    return _elimGenereOriginal(id).then(function(ok) {
-      _supabaseFetch('PATCH', '?id=eq.genere_' + id, {
-        deleted: true,
-        aggiornato_il: new Date().toISOString(),
-      });
-      return ok;
-    });
-  };
-
-  /* Intercetta resetTuttiDati */
-  var _resetOriginal = _DBS.resetTuttiDati.bind(_DBS);
-  _DBS.resetTuttiDati = function() {
-    return _resetOriginal().then(function(ok) {
-      _supabaseFetch('PATCH', '?tipo=eq.libro', {
-        deleted: true,
-        aggiornato_il: new Date().toISOString(),
-      });
-      return ok;
-    });
-  };
-}
-
-/* ══════════════════════════════════════════════════════════════════
-   HTTP HELPER — chiamate REST Supabase
-══════════════════════════════════════════════════════════════════ */
-
-function _supabaseFetch(metodo, querystring, corpo, headersExtra) {
-  var headers = {
-    'apikey':        SUPABASE_KEY,
-    'Authorization': 'Bearer ' + SUPABASE_KEY,
-    'Content-Type':  'application/json',
-  };
-
-  if (headersExtra) {
-    Object.keys(headersExtra).forEach(function(k) {
-      headers[k] = headersExtra[k];
+      var esiste = generi.find(function(g) { return g.nome === riga.dati.nome; });
+      if (!esiste) _DBS.aggiungiGenere(riga.dati.nome).catch(function() {});
     });
   }
-
-  var opzioni = {
-    method:  metodo,
-    headers: headers,
-  };
-
-  if (corpo) {
-    opzioni.body = JSON.stringify(corpo);
-  }
-
-  return fetch(
-    SUPABASE_URL + '/rest/v1/' + TABELLA + (querystring || ''),
-    opzioni
-  );
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   INDICATORE SYNC UI — icona nell'header impostazioni
-══════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════
+   HTTP HELPERS
+══════════════════════════════════════════════════════════════ */
 
-function _aggiornaIndicatoreSyncUI(stato) {
-  var el = document.getElementById('syncIndicatore');
-  if (!el) return;
-
-  var config = {
-    ok:           { colore: 'var(--colore-successo)',  icona: 'ti-cloud-check',    testo: 'Sincronizzato' },
-    caricamento:  { colore: 'var(--colore-accento)',   icona: 'ti-refresh',        testo: 'Sync in corso…' },
-    errore:       { colore: 'var(--colore-errore)',    icona: 'ti-cloud-x',        testo: 'Errore sync' },
-    offline:      { colore: 'var(--colore-testo-fantasma)', icona: 'ti-cloud-off', testo: 'Offline' },
-  };
-
-  var c = config[stato] || config.ok;
-  el.innerHTML = '<i class="ti ' + c.icona + '" style="font-size:14px;color:' + c.colore + ';' +
-    (stato === 'caricamento' ? 'animation:gira 1s linear infinite;' : '') + '"></i>' +
-    '<span style="font-size:10px;color:' + c.colore + ';">' + c.testo + '</span>';
+function _fetch(qs) {
+  return fetch(SUPABASE_URL + '/rest/v1/' + TABELLA + (qs || ''), {
+    headers: {
+      'apikey':        SUPABASE_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_KEY,
+    }
+  }).then(function(r) { return r.ok ? r.json() : []; })
+    .catch(function() { return []; });
 }
 
-/* Sincronizzazione manuale — esposta per pulsante in Impostazioni */
-function sincronizzaOra() {
-  if (!navigator.onLine) {
-    alert('Nessuna connessione internet disponibile.');
-    return;
-  }
-  _syncIniziale().then(function() {
-    _ricaricaUI();
+function _upsert(corpo) {
+  return fetch(SUPABASE_URL + '/rest/v1/' + TABELLA + '?on_conflict=id', {
+    method:  'POST',
+    headers: {
+      'apikey':        SUPABASE_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_KEY,
+      'Content-Type':  'application/json',
+      'Prefer':        'resolution=merge-duplicates',
+    },
+    body: JSON.stringify(corpo),
+  }).catch(function(e) {
+    console.warn('[Sync] Push fallito:', e.message);
   });
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   ESPOSIZIONE GLOBALE
-══════════════════════════════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════════════
+   UI
+══════════════════════════════════════════════════════════════ */
+
+function _indicatore(stato) {
+  var cfg = {
+    ok:          { colore: 'var(--colore-successo)',       icona: 'ti-cloud-check', testo: 'Sincronizzato' },
+    caricamento: { colore: 'var(--colore-accento)',        icona: 'ti-refresh',     testo: 'Sync…' },
+    errore:      { colore: 'var(--colore-errore)',         icona: 'ti-cloud-x',     testo: 'Errore sync' },
+    offline:     { colore: 'var(--colore-testo-fantasma)', icona: 'ti-cloud-off',   testo: 'Offline' },
+  };
+  var c = cfg[stato] || cfg.ok;
+  var spin = stato === 'caricamento' ? 'animation:gira 1s linear infinite;' : '';
+  var html = '<i class="ti ' + c.icona + '" style="font-size:14px;color:' + c.colore + ';' + spin + '"></i>' +
+             '<span style="font-size:10px;color:' + c.colore + ';">' + c.testo + '</span>';
+  ['syncIndicatore', 'syncIndicatoreImpost'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  });
+}
+
+function _ricaricaUI() {
+  _indicatore('ok');
+  if (typeof aggiornaHomeConDB  === 'function') aggiornaHomeConDB();
+  if (typeof disegnaScaffale    === 'function') disegnaScaffale();
+  if (typeof aggiornaClassifica === 'function') aggiornaClassifica();
+}
+
+function sincronizzaOra() {
+  if (!navigator.onLine) { alert('Nessuna connessione disponibile.'); return; }
+  _indicatore('caricamento');
+  _syncCompleto();
+}
+
+/* ══════════════════════════════════════════════════════════════
+   ESPOSIZIONE
+══════════════════════════════════════════════════════════════ */
 window.BuonaLetturaSync = {
-  inizializza:   inizializzaSync,
+  inizializza:    inizializzaSync,
   sincronizzaOra: sincronizzaOra,
+  pushLibro:      pushLibro,
+  pushEliminaLibro: pushEliminaLibro,
+  pushImpostazione: pushImpostazione,
+  pushGenere:     pushGenere,
+  pushEliminaGenere: pushEliminaGenere,
 };
 
-Object.assign(window, {
-  sincronizzaOra: sincronizzaOra,
-});
+Object.assign(window, { sincronizzaOra: sincronizzaOra });
