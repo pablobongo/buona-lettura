@@ -684,13 +684,6 @@ async function salvaLibro(id) {
       idSalvato = await DB.aggiungiLibro(dati);
     }
 
-    /* Push su Supabase dopo salvataggio */
-    if (window.BuonaLetturaSync && idSalvato) {
-      DB.leggiLibro(idSalvato).then(function(l) {
-        if (l) window.BuonaLetturaSync.pushLibro(l);
-      });
-    }
-
     _chiudiOverlay();
 
     /* Ricarica la sezione attiva */
@@ -956,8 +949,6 @@ async function confermaEliminaLibro(id, titolo) {
 async function eseguiEliminaLibro(id) {
   try {
     await DB.eliminaLibro(id);
-    /* Push delete su Supabase */
-    if (window.BuonaLetturaSync) window.BuonaLetturaSync.pushEliminaLibro(id);
     _chiudiOverlay();
     await aggiornaHomeConDB();
     await disegnaScaffale();
@@ -1093,7 +1084,6 @@ function salvaObiettivo() {
   var val = parseInt(document.getElementById('inputObiettivo').value, 10);
   if (!val || val < 1) return;
   DB.scriviImpostazione('obiettivoAnnuale', val).then(function() {
-    if (window.BuonaLetturaSync) window.BuonaLetturaSync.pushImpostazione('obiettivoAnnuale', val);
     _chiudiOverlay();
     aggiornaImpostazioni();
     aggiornaHomeConDB();
@@ -1152,7 +1142,6 @@ function apriSceltaFont() {
 
 function salvaFont(font) {
   DB.scriviImpostazione('font', font).then(function() {
-    if (window.BuonaLetturaSync) window.BuonaLetturaSync.pushImpostazione('font', font);
     document.documentElement.style.setProperty('--font-titolo', "'" + font + "', Georgia, serif");
     _chiudiOverlay();
     aggiornaImpostazioni();
@@ -1210,7 +1199,6 @@ function aggiungiGenereUI() {
   var nome  = input ? input.value.trim() : '';
   if (!nome) return;
   DB.aggiungiGenere(nome).then(function(gId) {
-    if (window.BuonaLetturaSync) window.BuonaLetturaSync.pushGenere(gId, nome);
     apriGestisciGeneri();
   }).catch(function(e) {
     alert('Errore: ' + e.message);
@@ -1220,7 +1208,6 @@ function aggiungiGenereUI() {
 function eliminaGenereUI(id, nome) {
   if (!confirm('Eliminare il genere "' + nome + '"?')) return;
   DB.eliminaGenere(id).then(function() {
-    if (window.BuonaLetturaSync) window.BuonaLetturaSync.pushEliminaGenere(id);
     apriGestisciGeneri();
   });
 }
