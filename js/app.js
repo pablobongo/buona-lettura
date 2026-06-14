@@ -241,6 +241,14 @@ async function aggiornaHomeConDB() {
       ? stats.votoMedio.toFixed(1).replace('.', ',')
       : '—';
 
+    /* Timestamp ultimo aggiornamento */
+    var elUltimo = document.getElementById('ultimoAggiornamento');
+    if (elUltimo) {
+      var ora = new Date();
+      elUltimo.textContent = 'Aggiornato: ' + ora.toLocaleDateString('it-IT') +
+        ' · ' + ora.toLocaleTimeString('it-IT', {hour:'2-digit', minute:'2-digit'});
+    }
+
     /* Libro in corso */
     const inCorso = tutti.find(l => l.stato === 'in-corso');
     aggiornaCardInCorso(inCorso);
