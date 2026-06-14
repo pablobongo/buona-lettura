@@ -26,8 +26,8 @@
    il rinnovo della cache sui client già installati.
    Formato: 'bl-v{major}.{minor}.{patch}'
 ─────────────────────────────────────────────────────────────── */
-const VERSIONE_CACHE        = 'bl-v1.4.0';
-const VERSIONE_CACHE_API    = 'bl-api-v1.4.0';
+const VERSIONE_CACHE        = 'bl-v1.5.0';
+const VERSIONE_CACHE_API    = 'bl-api-v1.5.0';
 
 /* ── FILE DA PRECARICARE ALL'INSTALLAZIONE ─────────────────────
    Questi file vengono scaricati e messi in cache durante l'evento
