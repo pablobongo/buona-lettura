@@ -99,10 +99,15 @@ function _applicaRemoto(righe) {
       var tsRemoto = new Date(riga.aggiornato_il).getTime();
 
       if (!locale) {
-        /* Libro nuovo da remoto */
-        promesse.push(
-          _DBS.aggiungiLibro(riga.dati).catch(function() {})
-        );
+        /* Libro nuovo da remoto — verifica che non esista già per titolo+autore */
+        var duplicato = libriLocali.find(function(l) {
+          return l.titolo === riga.dati.titolo && l.autore === riga.dati.autore;
+        });
+        if (!duplicato) {
+          promesse.push(
+            _DBS.aggiungiLibro(riga.dati).catch(function() {})
+          );
+        }
       } else {
         /* Confronta timestamp — vince il più recente */
         var tsLocale = new Date(locale.aggiornato_il || locale.dataInserimento || 0).getTime();
