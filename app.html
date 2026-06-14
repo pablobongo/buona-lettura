@@ -1839,16 +1839,23 @@
         return;
       }
 
-      const perc = libro.avanzamento || 0;
-      const colore = libro.colore || '#4A3728';
+      const perc    = libro.avanzamento || 0;
+      const colore  = libro.colore || '#4A3728';
+      const imgHtml = libro.copertina
+        ? `<img src="${libro.copertina}" alt="Copertina" style="width:100%;height:100%;object-fit:cover;border-radius:3px 4px 4px 3px;" />`
+        : `<i class="ti ti-book" style="font-size:14px; color:rgba(255,255,255,0.3);" aria-hidden="true"></i>`;
+
       card.innerHTML = `
-        <div class="libro-in-corso">
-          <div class="libro-dorso-mini" style="background:${colore}; width:40px; min-height:56px;">
-            <i class="ti ti-book" style="font-size:14px; color:rgba(255,255,255,0.3);" aria-hidden="true"></i>
+        <div class="libro-in-corso" onclick="apriScheda('${libro.id}')"
+             style="cursor:pointer;" role="button" tabindex="0"
+             aria-label="Apri scheda ${libro.titolo}">
+          <div class="libro-dorso-mini" style="background:${colore}; width:44px; min-height:62px;
+               border-radius:3px 4px 4px 3px; overflow:hidden; flex-shrink:0;">
+            ${imgHtml}
           </div>
           <div class="libro-info">
             <p class="libro-titolo">${libro.titolo || '—'}</p>
-            <p class="libro-autore">${libro.autore || '—'} · ${libro.genere || ''}</p>
+            <p class="libro-autore">${libro.autore || '—'}${libro.genere ? ' · ' + libro.genere : ''}</p>
             <div class="libro-progresso-barra">
               <div class="libro-progresso-fill" style="width:${perc}%"></div>
             </div>
@@ -1858,6 +1865,7 @@
                 : ''}
             </p>
           </div>
+          <i class="ti ti-chevron-right" style="font-size:16px;color:var(--colore-testo-fantasma);flex-shrink:0;"></i>
         </div>`;
     }
 
@@ -1878,25 +1886,31 @@
         return;
       }
 
-      lista.innerHTML = slice.map(l => `
-        <div class="card" style="margin-bottom:8px; cursor:pointer;"
-             onclick="apriScheda('${l.id}')"
-             role="button" tabindex="0" aria-label="Apri scheda ${l.titolo}">
-          <div class="libro-terminato">
-            <div class="libro-dorso-mini" style="background:${l.colore||'#4A3728'}; width:34px; min-height:46px; border-radius:3px 4px 4px 3px;">
-              <i class="ti ti-book" style="font-size:12px; color:rgba(255,255,255,0.3);" aria-hidden="true"></i>
-            </div>
-            <div class="libro-info">
-              <p class="libro-titolo" style="font-size:13px;">${l.titolo}</p>
-              <p class="libro-autore" style="font-size:10px;">
-                ${l.autore} · ${l.dataFine
-                  ? new Date(l.dataFine).toLocaleDateString('it-IT', {day:'numeric', month:'short', year:'numeric'})
-                  : ''}
-              </p>
-            </div>
-            ${l.voto ? `<div class="voto-cerchio" aria-label="Voto ${l.voto}">${l.voto}</div>` : ''}
-          </div>
-        </div>`).join('');
+      lista.innerHTML = slice.map(function(l) {
+        var imgHtml = l.copertina
+          ? '<img src="' + l.copertina + '" alt="Copertina" style="width:100%;height:100%;object-fit:cover;border-radius:2px 3px 3px 2px;" />'
+          : '<i class="ti ti-book" style="font-size:11px; color:rgba(255,255,255,0.3);"></i>';
+        var dataStr = l.dataFine
+          ? new Date(l.dataFine).toLocaleDateString('it-IT', {day:'numeric', month:'short', year:'numeric'})
+          : '';
+        return '<div class="card" style="margin-bottom:8px; cursor:pointer;" ' +
+               'onclick="apriScheda(\'' + l.id + '\')" ' +
+               'role="button" tabindex="0" aria-label="Apri scheda ' + l.titolo + '">' +
+          '<div class="libro-terminato">' +
+            '<div style="width:36px; min-height:50px; background:' + (l.colore||'#4A3728') + '; ' +
+                 'border-radius:3px 4px 4px 3px; flex-shrink:0; overflow:hidden; ' +
+                 'display:flex; align-items:center; justify-content:center;">' +
+              imgHtml +
+            '</div>' +
+            '<div class="libro-info">' +
+              '<p class="libro-titolo" style="font-size:13px;">' + l.titolo + '</p>' +
+              '<p class="libro-autore" style="font-size:10px;">' + l.autore + '</p>' +
+              '<p style="font-size:9px;color:var(--colore-testo-fantasma);margin-top:1px;">' + dataStr + '</p>' +
+            '</div>' +
+            (l.voto ? '<div class="voto-cerchio" aria-label="Voto ' + l.voto + '">' + l.voto + '</div>' : '') +
+          '</div>' +
+        '</div>';
+      }).join('');
     }
 
     /*
