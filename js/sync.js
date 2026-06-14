@@ -32,6 +32,7 @@ var _syncAttivo      = false;
 var _realtimeCanale  = null;
 var _ultimoSync      = null;
 var _inSync          = false;
+var _syncInProgress  = false; /* blocca loop intercettazione durante operazioni sync */
 
 /* ══════════════════════════════════════════════════════════════════
    INIZIALIZZAZIONE
@@ -114,7 +115,8 @@ function _syncIniziale() {
 
 /* ── Fetch tutti i record da Supabase ─────────────────────────── */
 function _fetchTutti() {
-  return _supabaseFetch('GET', '?select=*&deleted=eq.false&order=aggiornato_il.desc')
+  /* Scarica tutti i record inclusi i deleted — necessario per sync eliminazioni */
+  return _supabaseFetch('GET', '?select=*&order=aggiornato_il.desc')
     .then(function(r) { return r.ok ? r.json() : []; });
 }
 
@@ -129,9 +131,32 @@ function _unisciConLocale(righeRemote) {
     var impostLocali  = risultati[1];
     var generiLocali  = risultati[2];
 
+    /* Separa record attivi da eliminati */
+    var righeAttive   = righeRemote.filter(function(r) { return !r.deleted; });
+    var righeEliminate = righeRemote.filter(function(r) { return r.deleted; });
+
     var promesse = [];
 
-    righeRemote.forEach(function(riga) {
+    /* ── Attiva flag sync per bloccare loop ── */
+    _syncInProgress = true;
+
+    /* Elimina localmente i record cancellati da remoto */
+    righeEliminate.forEach(function(riga) {
+      if (riga.tipo === 'libro') {
+        var esisteLocale = libriLocali.find(function(l) { return l.id === riga.id; });
+        if (esisteLocale) {
+          /* Elimina dal DB locale senza pushare su Supabase */
+          promesse.push(_DBS.eliminaLibro(riga.id).catch(function(){}));
+        }
+      }
+    });
+
+    /* Indici per confronti veloci */
+    var idRemotiAttivi    = righeAttive.map(function(r) { return r.id; });
+    var idRemotiEliminati = righeEliminate.map(function(r) { return r.id; });
+
+    /* Processa record attivi da remoto */
+    righeAttive.forEach(function(riga) {
       var datiRemoti = riga.dati;
       var tsRemoto   = new Date(riga.aggiornato_il).getTime();
 
@@ -141,20 +166,17 @@ function _unisciConLocale(righeRemote) {
           /* Libro nuovo da remoto — inserisci in locale */
           promesse.push(_DBS.aggiungiLibro(datiRemoti).catch(function(){}));
         } else {
+          /* Confronta timestamp: usa dataInserimento come proxy */
           var tsLocale = new Date(locale.dataInserimento || 0).getTime();
           if (tsRemoto > tsLocale) {
-            /* Remoto più recente — aggiorna locale */
             promesse.push(_DBS.aggiornaLibro(riga.id, datiRemoti).catch(function(){}));
           }
         }
       }
 
       if (riga.tipo === 'impostazione') {
-        var chiave   = riga.id.replace('impost_', '');
-        var valLocale = impostLocali[chiave];
-        if (valLocale === undefined || tsRemoto > (_ultimoSync ? new Date(_ultimoSync).getTime() : 0)) {
-          promesse.push(_DBS.scriviImpostazione(chiave, datiRemoti.valore).catch(function(){}));
-        }
+        var chiave = riga.id.replace('impost_', '');
+        promesse.push(_DBS.scriviImpostazione(chiave, datiRemoti.valore).catch(function(){}));
       }
 
       if (riga.tipo === 'genere') {
@@ -167,32 +189,35 @@ function _unisciConLocale(righeRemote) {
       }
     });
 
-    /* Push record locali non presenti in remoto */
-    var idRemoti = righeRemote.map(function(r) { return r.id; });
-
+    /* Push record locali non presenti in remoto (né attivi né eliminati) */
     libriLocali.forEach(function(l) {
-      if (!idRemoti.includes(l.id)) {
+      /* Non pushare se è stato eliminato da remoto */
+      if (!idRemotiAttivi.includes(l.id) && !idRemotiEliminati.includes(l.id)) {
         promesse.push(_pushRecord('libro', l.id, l));
       }
     });
 
     Object.keys(impostLocali).forEach(function(chiave) {
-      if (!idRemoti.includes('impost_' + chiave)) {
+      if (!idRemotiAttivi.includes('impost_' + chiave)) {
         promesse.push(_pushRecord('impostazione', 'impost_' + chiave, { valore: impostLocali[chiave] }));
       }
     });
 
     generiLocali.forEach(function(g) {
-      if (!idRemoti.includes('genere_' + g.id)) {
+      if (!idRemotiAttivi.includes('genere_' + g.id)) {
         promesse.push(_pushRecord('genere', 'genere_' + g.id, g));
       }
     });
 
     return Promise.all(promesse);
   }).then(function() {
+    _syncInProgress = false;
     /* Ricarica UI dopo la sincronizzazione */
     if (typeof aggiornaHomeConDB === 'function') aggiornaHomeConDB();
     if (typeof disegnaScaffale  === 'function') disegnaScaffale();
+  }).catch(function(e) {
+    _syncInProgress = false;
+    throw e;
   });
 }
 
@@ -311,33 +336,36 @@ function _avviaRealtime() {
 function _gestisciAggiornamentoRemoto(riga) {
   if (!riga || !riga.dati) return;
   var dati = riga.dati;
+  _syncInProgress = true;
 
   if (riga.tipo === 'libro') {
     _DBS.leggiLibro(riga.id).then(function(locale) {
       if (!locale) {
-        _DBS.aggiungiLibro(dati).then(_ricaricaUI);
+        _DBS.aggiungiLibro(dati).then(function() { _syncInProgress = false; _ricaricaUI(); });
       } else {
         var tsRemoto = new Date(riga.aggiornato_il).getTime();
         var tsLocale = new Date(locale.dataInserimento || 0).getTime();
         if (tsRemoto > tsLocale) {
-          _DBS.aggiornaLibro(riga.id, dati).then(_ricaricaUI);
+          _DBS.aggiornaLibro(riga.id, dati).then(function() { _syncInProgress = false; _ricaricaUI(); });
+        } else {
+          _syncInProgress = false;
         }
       }
     });
-  }
-
-  if (riga.tipo === 'impostazione') {
+  } else if (riga.tipo === 'impostazione') {
     var chiave = riga.id.replace('impost_', '');
     _DBS.scriviImpostazione(chiave, dati.valore).then(function() {
+      _syncInProgress = false;
       if (typeof aggiornaImpostazioni === 'function') aggiornaImpostazioni();
     });
-  }
-
-  if (riga.tipo === 'genere') {
+  } else if (riga.tipo === 'genere') {
     _DBS.leggiGeneri().then(function(generi) {
       var esiste = generi.find(function(g) { return g.nome === dati.nome; });
-      if (!esiste) _DBS.aggiungiGenere(dati.nome);
+      if (!esiste) { _DBS.aggiungiGenere(dati.nome).then(function() { _syncInProgress = false; }); }
+      else { _syncInProgress = false; }
     });
+  } else {
+    _syncInProgress = false;
   }
 }
 
@@ -365,9 +393,12 @@ function _interceptaDB() {
   var _aggiOriginal = _DBS.aggiungiLibro.bind(_DBS);
   _DBS.aggiungiLibro = function(dati) {
     return _aggiOriginal(dati).then(function(id) {
-      _DBS.leggiLibro(id).then(function(libro) {
-        if (libro) _pushRecord('libro', id, libro);
-      });
+      /* Non pushare se operazione avviata dal sync stesso */
+      if (!_syncInProgress) {
+        _DBS.leggiLibro(id).then(function(libro) {
+          if (libro) _pushRecord('libro', id, libro);
+        });
+      }
       return id;
     });
   };
@@ -376,7 +407,9 @@ function _interceptaDB() {
   var _aggiLibroOriginal = _DBS.aggiornaLibro.bind(_DBS);
   _DBS.aggiornaLibro = function(id, aggiornamenti) {
     return _aggiLibroOriginal(id, aggiornamenti).then(function(libro) {
-      _pushRecord('libro', id, libro);
+      if (!_syncInProgress) {
+        _pushRecord('libro', id, libro);
+      }
       return libro;
     });
   };
@@ -385,7 +418,7 @@ function _interceptaDB() {
   var _elimOriginal = _DBS.eliminaLibro.bind(_DBS);
   _DBS.eliminaLibro = function(id) {
     return _elimOriginal(id).then(function(ok) {
-      /* Soft delete su Supabase */
+      /* Soft delete su Supabase — anche durante sync (eliminazione deliberata) */
       _supabaseFetch('PATCH', '?id=eq.' + encodeURIComponent(id), {
         deleted: true,
         aggiornato_il: new Date().toISOString(),
@@ -398,7 +431,9 @@ function _interceptaDB() {
   var _scriviOriginal = _DBS.scriviImpostazione.bind(_DBS);
   _DBS.scriviImpostazione = function(chiave, valore) {
     return _scriviOriginal(chiave, valore).then(function(ok) {
-      _pushRecord('impostazione', 'impost_' + chiave, { valore: valore });
+      if (!_syncInProgress) {
+        _pushRecord('impostazione', 'impost_' + chiave, { valore: valore });
+      }
       return ok;
     });
   };
@@ -407,7 +442,9 @@ function _interceptaDB() {
   var _genereOriginal = _DBS.aggiungiGenere.bind(_DBS);
   _DBS.aggiungiGenere = function(nome) {
     return _genereOriginal(nome).then(function(id) {
-      _pushRecord('genere', 'genere_' + id, { nome: nome, ordine: id });
+      if (!_syncInProgress) {
+        _pushRecord('genere', 'genere_' + id, { nome: nome, ordine: id });
+      }
       return id;
     });
   };
@@ -428,7 +465,6 @@ function _interceptaDB() {
   var _resetOriginal = _DBS.resetTuttiDati.bind(_DBS);
   _DBS.resetTuttiDati = function() {
     return _resetOriginal().then(function(ok) {
-      /* Soft delete di tutti i libri su Supabase */
       _supabaseFetch('PATCH', '?tipo=eq.libro', {
         deleted: true,
         aggiornato_il: new Date().toISOString(),
